@@ -126,11 +126,17 @@ export function withRateLimit(
  * Returns the same 429 shape `withRateLimit` returns, or null when the request
  * may proceed. Fails open when Redis is unavailable, matching `withRateLimit`.
  */
-export async function enforceUserRateLimit(
-	req: NextRequest,
-	userId: string,
-	presetName: RateLimitPreset = 'strict',
-): Promise<NextResponse | null> {
+export interface EnforceUserRateLimitOptions {
+	req: NextRequest
+	userId: string
+	presetName?: RateLimitPreset
+}
+
+export async function enforceUserRateLimit({
+	req,
+	userId,
+	presetName = 'strict',
+}: EnforceUserRateLimitOptions): Promise<NextResponse | null> {
 	const preset = RATE_LIMIT_PRESETS[presetName]
 	const limiter = new RateLimiter({
 		maxAttempts: preset.attempts,

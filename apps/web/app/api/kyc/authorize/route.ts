@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
 	// Rate limited after authentication and before the authorization service runs,
 	// keyed by the authenticated user (issue #1021). A blocked caller never reaches
 	// authorizeFinancialAction.
-	const limited = await enforceUserRateLimit(req, session.user.id)
+	const limited = await enforceUserRateLimit({ req, userId: session.user.id })
 	if (limited) return limited
 
 	let body: unknown

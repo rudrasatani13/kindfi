@@ -51,28 +51,22 @@ mock.module('~/lib/auth/rate-limiter', () => ({
 
 // ── shared infrastructure ────────────────────────────────────────────────────
 
-mock.module('@/lib/logger', () => ({
-	logger: { warn: () => {}, error: () => {}, info: () => {} },
-	// The KYC authorization preflight reaches modules that use the class
-	// form of the logger, and that resolve it through the other alias
-	// (issue #1021).
-	Logger: class {
-		info() {}
-		warn() {}
-		error() {}
-	},
-}))
-mock.module('~/lib/logger', () => ({
-	logger: { warn: () => {}, error: () => {}, info: () => {} },
-	// The KYC authorization preflight reaches modules that use the class
-	// form of the logger, and that resolve it through the other alias
-	// (issue #1021).
-	Logger: class {
-		info() {}
-		warn() {}
-		error() {}
-	},
-}))
+// The KYC authorization preflight (issue #1021) reaches modules that use the
+// class form of the logger, and that resolve it through either alias, so one
+// typed mock is registered under both names.
+class MockLogger {
+	info(): void {}
+	warn(): void {}
+	error(): void {}
+}
+
+const LOGGER_MOCK = {
+	logger: new MockLogger(),
+	Logger: MockLogger,
+}
+
+mock.module('@/lib/logger', () => LOGGER_MOCK)
+mock.module('~/lib/logger', () => LOGGER_MOCK)
 
 mock.module('~/lib/services/audit-logger', () => ({
 	AuditLogger: class {
@@ -442,8 +436,15 @@ describe('KYC authorization preflight (/api/kyc/authorize)', () => {
 		}))
 
 		const res = await kycAuthorizePOST(withBody('/api/kyc/authorize'))
+		const body = (await (res as unknown as { json: () => Promise<unknown> }).json()) as {
+			allowed: boolean
+			mode: string
+		}
 
-		expect(res.status).not.toBe(429)
+		// 200 and the authorization service's own decision, not merely "not 429":
+		// a 400/401/403 would also have passed the weaker assertion.
+		expect(res.status).toBe(200)
+		expect(body).toMatchObject({ allowed: true, mode: 'disabled' })
 		mockSession = null
 	})
 })
