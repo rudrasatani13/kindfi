@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { logger } from '@/lib/logger'
 import { nextAuthOption } from '~/lib/auth/auth-options'
+import { decideDiditSessionReuse } from '~/lib/kyc/session-reuse'
 import {
 	findActiveDiditSessionForUser,
 	getCanonicalKycStatusForUser,
@@ -46,12 +47,31 @@ async function createSessionHandler(req: NextRequest) {
 
 		const activeSession = await findActiveDiditSessionForUser(session.user.id)
 		if (activeSession?.verificationUrl) {
-			return NextResponse.json({
-				success: true,
+			const decision = await decideDiditSessionReuse(activeSession)
+
+			if (decision.kind === 'reuse') {
+				return NextResponse.json({
+					success: true,
+					sessionId: activeSession.sessionId,
+					verificationUrl: activeSession.verificationUrl,
+					resumed: true,
+					canonicalStatus: activeSession.canonicalStatus,
+				})
+			}
+
+			if (decision.kind === 'verified') {
+				return NextResponse.json({
+					success: true,
+					alreadyVerified: true,
+					canonicalStatus: decision.canonicalStatus,
+				})
+			}
+
+			// The stored session is no longer usable and has been recorded as such;
+			// fall through and open a fresh Didit session for this user.
+			logger.warn('[kyc] Replacing a Didit session that is no longer valid', {
 				sessionId: activeSession.sessionId,
-				verificationUrl: activeSession.verificationUrl,
-				resumed: true,
-				canonicalStatus: activeSession.canonicalStatus,
+				canonicalStatus: decision.canonicalStatus,
 			})
 		}
 
