@@ -48,16 +48,6 @@ export async function PATCH(request: Request, context: { params: Promise<{ slug:
 
 		const nextStatus = parsed.data.status as ProjectStatus
 
-		if (!auth.access.isPlatformAdmin && nextStatus === 'review') {
-			const kycDecision = await requireKycAuthorization({
-				userId,
-				action: 'submit_campaign',
-			})
-			if (!kycDecision.ok) {
-				return kycDecision.response
-			}
-		}
-
 		const { data: project, error: fetchError } = await supabaseServiceRole
 			.from('projects')
 			.select('id, status, title, kindler_id')
@@ -85,6 +75,20 @@ export async function PATCH(request: Request, context: { params: Promise<{ slug:
 				},
 				{ status: 403 },
 			)
+		}
+
+		// Checked only once the transition is known to be valid: an invalid
+		// transition used to be answered with a KYC denial, which told a manager
+		// that verification was the problem when the real answer was that the
+		// project cannot move to review from where it is (issue #1024).
+		if (!auth.access.isPlatformAdmin && nextStatus === 'review') {
+			const kycDecision = await requireKycAuthorization({
+				userId,
+				action: 'submit_campaign',
+			})
+			if (!kycDecision.ok) {
+				return kycDecision.response
+			}
 		}
 
 		const { data: updated, error: updateError } = await supabaseServiceRole
