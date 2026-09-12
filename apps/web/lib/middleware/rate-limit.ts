@@ -41,6 +41,7 @@
  * - `POST /api/contributions/create`
  * - `POST /api/governance/vote`
  * - `POST /api/kyc/didit/create-session`
+ * - `POST /api/kyc/authorize` (after authentication, keyed by user id)
  *
  * ### Medium priority — `moderate` (10 req/min, 30 min block)
  * - `POST /api/comments`
@@ -110,4 +111,49 @@ export function withRateLimit(
 
 		return handler(req)
 	}
+}
+
+/**
+ * Applies the limiter to a request whose user has already been authenticated.
+ *
+ * `withRateLimit` wraps a whole handler, so it resolves its identifier before
+ * anything else runs -- for a session-authenticated route that means fetching
+ * the session twice, once to key the limiter and once in the handler. Routes
+ * that must authenticate first call this after their own session check and pass
+ * the authenticated user id as the key (issue #1021, the KYC authorization
+ * preflight).
+ *
+ * Returns the same 429 shape `withRateLimit` returns, or null when the request
+ * may proceed. Fails open when Redis is unavailable, matching `withRateLimit`.
+ */
+export async function enforceUserRateLimit(
+	req: NextRequest,
+	userId: string,
+	presetName: RateLimitPreset = 'strict',
+): Promise<NextResponse | null> {
+	const preset = RATE_LIMIT_PRESETS[presetName]
+	const limiter = new RateLimiter({
+		maxAttempts: preset.attempts,
+		windowSecs: preset.window,
+		blockSecs: preset.block,
+		configId: presetName,
+	})
+
+	try {
+		const result = await limiter.increment(userId, req.nextUrl.pathname)
+
+		if (result.isBlocked) {
+			return NextResponse.json(
+				{ error: 'Too many requests. Please try again later.' },
+				{
+					status: 429,
+					headers: { 'Retry-After': preset.block.toString() },
+				},
+			)
+		}
+	} catch (err) {
+		logger.warn('[RateLimit] Redis unavailable, failing open:', err)
+	}
+
+	return null
 }

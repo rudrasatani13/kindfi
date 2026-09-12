@@ -5,6 +5,7 @@ import { nextAuthOption } from '~/lib/auth/auth-options'
 import { authorizeFinancialAction } from '~/lib/kyc/authorization-service'
 import { toKycDenialPayload } from '~/lib/kyc/denial'
 import { KYC_FINANCIAL_ACTIONS, type KycFinancialAction } from '~/lib/kyc/types'
+import { enforceUserRateLimit } from '~/lib/middleware/rate-limit'
 
 const authorizeBodySchema = (
 	body: unknown,
@@ -37,6 +38,12 @@ export async function POST(req: NextRequest) {
 	if (!session?.user?.id) {
 		return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 	}
+
+	// Rate limited after authentication and before the authorization service runs,
+	// keyed by the authenticated user (issue #1021). A blocked caller never reaches
+	// authorizeFinancialAction.
+	const limited = await enforceUserRateLimit(req, session.user.id)
+	if (limited) return limited
 
 	let body: unknown
 	try {

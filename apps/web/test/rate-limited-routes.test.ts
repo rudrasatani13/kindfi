@@ -23,6 +23,9 @@ const mockIncrement = mock(async (_id: string, _action: string) => ({
 // ─── Module mocks (must be registered before any dynamic imports) ─────────────
 
 mock.module('next/server', () => ({
+	// Reached through the KYC authorization preflight (issue #1021); in a
+	// test the callback can simply run inline.
+	after: (callback: () => unknown) => callback(),
 	NextResponse: {
 		json: (body: unknown, init?: ResponseInit) => {
 			const headersMap = new Map<string, string>(
@@ -50,6 +53,25 @@ mock.module('~/lib/auth/rate-limiter', () => ({
 
 mock.module('@/lib/logger', () => ({
 	logger: { warn: () => {}, error: () => {}, info: () => {} },
+	// The KYC authorization preflight reaches modules that use the class
+	// form of the logger, and that resolve it through the other alias
+	// (issue #1021).
+	Logger: class {
+		info() {}
+		warn() {}
+		error() {}
+	},
+}))
+mock.module('~/lib/logger', () => ({
+	logger: { warn: () => {}, error: () => {}, info: () => {} },
+	// The KYC authorization preflight reaches modules that use the class
+	// form of the logger, and that resolve it through the other alias
+	// (issue #1021).
+	Logger: class {
+		info() {}
+		warn() {}
+		error() {}
+	},
 }))
 
 mock.module('~/lib/services/audit-logger', () => ({
@@ -86,7 +108,12 @@ mock.module('~/lib/error', () => ({
 
 // ── auth ─────────────────────────────────────────────────────────────────────
 
-mock.module('next-auth', () => ({ getServerSession: async () => null }))
+let mockSession: { user?: { id?: string } } | null = null
+// The KYC authorization preflight pulls server-only modules into the graph
+// (issue #1021); that guard is a build-time marker, not behaviour under test.
+mock.module('server-only', () => ({}))
+
+mock.module('next-auth', () => ({ getServerSession: async () => mockSession }))
 mock.module('~/lib/auth/auth-options', () => ({ nextAuthOption: {} }))
 mock.module('~/lib/api-helpers', () => ({
 	requireSession: async () => ({ user: { id: 'user-1' }, error: null }),
@@ -221,6 +248,7 @@ const { POST: commentsPOST } = await import('../app/api/comments/route')
 const { POST: foundationsPOST } = await import('../app/api/foundations/create/route')
 const { POST: projectsPOST } = await import('../app/api/projects/create/route')
 const { POST: notificationsPOST } = await import('../app/api/notifications/push/route')
+const { POST: kycAuthorizePOST } = await import('../app/api/kyc/authorize/route')
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -230,6 +258,13 @@ function makeRequest(path = '/api/test'): NextRequest {
 		headers: {
 			get: (key: string) => (key === 'x-forwarded-for' ? '127.0.0.1' : null),
 		},
+	} as unknown as NextRequest
+}
+
+function withBody(path: string): NextRequest {
+	return {
+		...makeRequest(path),
+		json: async () => ({ action: 'donate' }),
 	} as unknown as NextRequest
 }
 
@@ -368,5 +403,47 @@ describe('Rate-limited routes — Redis failure falls open', () => {
 	test('/api/contributions/create passes through when Redis is unavailable', async () => {
 		const res = await contributionsPOST(makeRequest('/api/contributions/create'))
 		expect(res.status).not.toBe(429)
+	})
+})
+
+describe('KYC authorization preflight (/api/kyc/authorize)', () => {
+	beforeEach(() => {
+		mockIncrement.mockReset()
+	})
+
+	test('returns 429 keyed by the authenticated user when blocked', async () => {
+		mockSession = { user: { id: 'user-1' } }
+		mockIncrement.mockImplementation(async () => ({
+			isBlocked: true,
+			attemptsRemaining: 0,
+		}))
+
+		const res = await kycAuthorizePOST(withBody('/api/kyc/authorize'))
+
+		expect(res.status).toBe(429)
+		expect(mockIncrement).toHaveBeenCalledWith('user-1', '/api/kyc/authorize')
+		mockSession = null
+	})
+
+	test('does not consult the limiter before authentication', async () => {
+		mockSession = null
+
+		const res = await kycAuthorizePOST(withBody('/api/kyc/authorize'))
+
+		expect(res.status).toBe(401)
+		expect(mockIncrement).not.toHaveBeenCalled()
+	})
+
+	test('passes through to the authorization service when not blocked', async () => {
+		mockSession = { user: { id: 'user-1' } }
+		mockIncrement.mockImplementation(async () => ({
+			isBlocked: false,
+			attemptsRemaining: 2,
+		}))
+
+		const res = await kycAuthorizePOST(withBody('/api/kyc/authorize'))
+
+		expect(res.status).not.toBe(429)
+		mockSession = null
 	})
 })
