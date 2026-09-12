@@ -73,32 +73,21 @@ export function ProfileDashboard({
 		if (!kycCompleted) return
 
 		const urlParams = new URLSearchParams(window.location.search)
-		const status = urlParams.get('status')
 		const sessionId = urlParams.get('verificationSessionId')
 
-		if (!status || !sessionId) {
+		if (!sessionId) {
 			toast.info(t('profile.kycCallbackChecking'))
 			return
 		}
 
-		const normalizedStatus = status.replace(/\+/g, ' ')
-		if (normalizedStatus === 'Approved') {
-			toast.success(t('profile.kycCallbackApproved'))
-		} else if (normalizedStatus === 'Declined') {
-			toast.error(t('profile.kycCallbackDeclined'))
-		} else if (normalizedStatus === 'In Review' || normalizedStatus === 'In Progress') {
-			toast.info(t('profile.kycCallbackReview'))
-		} else {
-			toast.info(t('profile.kycCallbackChecking'))
-		}
+		toast.info(t('profile.kycCallbackChecking'))
 
 		fetch('/api/kyc/didit/callback', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				verificationSessionId: sessionId,
-				status: normalizedStatus,
-			}),
+			// Only the session id: the server reads the status from Didit, so a
+			// query string cannot assert one (issue #1022).
+			body: JSON.stringify({ verificationSessionId: sessionId }),
 		})
 			.then(async (res) => {
 				if (res.ok) {

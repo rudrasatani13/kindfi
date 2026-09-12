@@ -3,28 +3,29 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { logger } from '@/lib/logger'
 import { nextAuthOption } from '~/lib/auth/auth-options'
-import { applyDiditStatusUpdate } from '~/lib/kyc/webhook-service'
+import { refreshDiditSessionStatusFromProvider } from '~/lib/kyc/refresh-session-status'
 import { withRateLimit } from '~/lib/middleware/rate-limit'
 
 interface DiditCallbackBody {
+	/** Which session the browser came back from. Never a status: see below. */
 	verificationSessionId: string
-	status: string
 }
 
 const isValidCallbackBody = (data: unknown): data is DiditCallbackBody =>
 	typeof data === 'object' &&
 	data !== null &&
 	typeof (data as DiditCallbackBody).verificationSessionId === 'string' &&
-	(data as DiditCallbackBody).verificationSessionId.length > 0 &&
-	typeof (data as DiditCallbackBody).status === 'string' &&
-	(data as DiditCallbackBody).status.length > 0
+	(data as DiditCallbackBody).verificationSessionId.length > 0
 
 /**
  * POST /api/kyc/didit/callback
  *
- * Handles callback from Didit with a status update after the user returns.
- * The browser-supplied status is stored only after the session is bound to
- * the authenticated user; Didit webhooks remain authoritative.
+ * Handles the browser returning from Didit.
+ *
+ * The body carries the session id and nothing else. The status is read from
+ * Didit here, because a status the browser can assert is one a user can approve
+ * themselves with (issue #1022); the Didit webhook stays authoritative, and the
+ * session must belong to the authenticated user.
  */
 async function diditCallbackHandler(req: NextRequest): Promise<NextResponse> {
 	let body: unknown
@@ -48,22 +49,35 @@ async function diditCallbackHandler(req: NextRequest): Promise<NextResponse> {
 			return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 		}
 
-		const { verificationSessionId, status } = body
-		const result = await applyDiditStatusUpdate({
+		const { verificationSessionId } = body
+		const refresh = await refreshDiditSessionStatusFromProvider({
 			sessionId: verificationSessionId,
-			diditStatus: status,
 			userId: session.user.id,
-			source: 'callback',
-			providerEventAt: new Date(),
 		})
 
-		const canonicalStatus = result.canonicalStatus ?? 'pending'
+		if (!refresh.applied && refresh.reason === 'not_found') {
+			// Unknown session, or a session that belongs to somebody else: the two
+			// are deliberately indistinguishable, so this cannot probe for session ids.
+			return NextResponse.json({ error: 'Unknown verification session' }, { status: 403 })
+		}
+
+		if (!refresh.applied) {
+			return NextResponse.json(
+				{
+					success: false,
+					applied: false,
+					reason: 'provider_unavailable',
+					message: 'Didit status is temporarily unavailable; the webhook will confirm it.',
+				},
+				{ status: 202 },
+			)
+		}
 
 		return NextResponse.json({
 			success: true,
-			status: canonicalStatus === 'approved' ? 'approved' : canonicalStatus,
-			canonicalStatus,
-			diditStatus: status,
+			applied: true,
+			status: refresh.canonicalStatus,
+			canonicalStatus: refresh.canonicalStatus,
 		})
 	} catch (error) {
 		logger.error('Error processing Didit callback:', error)

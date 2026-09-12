@@ -7,7 +7,7 @@ import { logger } from '@/lib/logger'
 import { ProfileDashboardV2 } from '~/components/sections/profile/dashboard/profile-dashboard-v2'
 import { ProfileDashboard } from '~/components/sections/profile/profile-dashboard'
 import { nextAuthOption } from '~/lib/auth/auth-options'
-import { applyDiditStatusUpdate } from '~/lib/kyc/webhook-service'
+import { refreshDiditSessionStatusFromProvider } from '~/lib/kyc/refresh-session-status'
 import { requireCompletedOnboarding } from '~/lib/onboarding/guard'
 import { resolveSmartAccountAddress } from '~/lib/utils/wallet-address'
 
@@ -44,13 +44,12 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
 	const params = await searchParams
 	const kycCompleted = params.kyc === 'completed'
 
-	if (params.verificationSessionId && params.status && kycCompleted) {
-		await applyDiditStatusUpdate({
+	if (params.verificationSessionId && kycCompleted) {
+		// The URL says which session the browser came back from, never what
+		// the status is: that is read from Didit (issue #1022).
+		await refreshDiditSessionStatusFromProvider({
 			sessionId: params.verificationSessionId,
-			diditStatus: params.status,
 			userId: session.user.id,
-			source: 'callback',
-			providerEventAt: new Date(),
 		})
 	}
 
